@@ -10,7 +10,7 @@ Status: draft, 2026-10-28.
 | In | Out (later) |
 |---|---|
 | Pairing by QR code (+ manual fallback) | Login with a password (the server has none) |
-| Bottom navigation: Floor plan (placeholder), Devices, Settings | Floor plan itself (server has no rooms yet) |
+| Bottom navigation: Floor plan (placeholder), Devices, More | Floor plan itself (server has no rooms yet) |
 | Device list with quick controls | Schedules, notifications, admin screens |
 | Device detail with all functions, rename | Live updates (server has no SSE; we poll) |
 | Command outcome feedback (failed / overridden) | Widgets, Quick Settings tile, Wear |
@@ -25,7 +25,7 @@ short-lived pairing code.
 
 Server side is implemented; the contract is heater-hub `docs/api.md` sections 3 and 5.0.
 
-1. A signed-in user (web UI, or the app's Settings) presses **Pair device** for an existing
+1. A signed-in user (web UI, or the app's More tab) presses **Pair device** for an existing
    user; an admin can also create a new user. `POST /api/v1/pairings` returns a `code`
    (`K7QM-4XPT`, single use, 10 min), its `uri` and `expiresAt`.
 2. The QR code carries `heaterhub://pair?server=<url-encoded base URL>&code=<code>`. The app
@@ -39,7 +39,7 @@ Server side is implemented; the contract is heater-hub `docs/api.md` sections 3 
    `429 TOO_MANY_ATTEMPTS` → "Too many attempts, try again in a minute"; network → "Server not
    reachable (same Wi-Fi / Tailscale?)"; anything else → "Not a heater-hub server".
 6. Any later `401` → clear the token, go to Connect with "Access was revoked".
-7. Logout (Settings) → clear token, go to Connect.
+7. Logout (More tab) → clear token, go to Connect.
 
 Storage: Jetpack DataStore; the token encrypted with an AES-GCM key from Android Keystore
 (EncryptedSharedPreferences is deprecated). Exclude it from backup (`data_extraction_rules.xml`).
@@ -57,7 +57,7 @@ Development: `./gradlew runFakeServer` in heater-hub (port 18080); from the emul
 Connect (scan QR) ──► Main ──────────────────────────────► Device detail (full screen, no bottom bar)
             ├─ Floor plan   (placeholder "Work in progress")
             ├─ Devices      (start tab)
-            └─ Settings     (server, user, pair device (admin), logout, version)
+            └─ More         (server, user, pair device, logout, version)
 ```
 
 - Single activity, Compose, **Navigation 3** (the back stack is a plain list you own: one
@@ -165,7 +165,7 @@ supporting text from `unavailableReason` ("Turn the device on first").
 └──────────────────────────────────────────────┘
 ```
 
-- Card: image 56 dp on the left; name (titleMedium) + power indicator; second line
+- Card: product image 64 dp on the left (Coil, from the server; placeholder icon while loading or missing); name (titleMedium) + power indicator; second line
   `currentTemperature · mode` (or "Offline"); chips at the bottom.
 - Power indicator: not only colour – filled dot on, outlined off (+ content description).
 - Suggestions for "something more" on the item: **mode** (above), **fault icon** (the API
@@ -191,7 +191,9 @@ supporting text from `unavailableReason` ("Turn the device on first").
 
 Centered illustration + "Floor plan – coming soon". No ViewModel.
 
-### 6.4 Settings
+### 6.4 More (Možnosti)
+
+Third tab, icon: three horizontal lines. A list of entries, not a settings form.
 
 - User name and role (`/me`), server URL, app version, **Log out** (with confirmation).
 - **Pair a device** → pick a user (`GET /api/v1/users`); admins can also create one (id,
@@ -209,58 +211,88 @@ Centered illustration + "Floor plan – coming soon". No ViewModel.
 - Tests: mappers and quick-control rules (pure JVM), ViewModels with a fake repository,
   API client with Ktor `MockEngine` against JSON from `docs/api.md`.
 
-### 7.1 Packages
+### 7.1 Modules
+
+Split by area of the app, not by layer. New areas (groups, history) become new feature modules
+without touching the existing ones.
 
 ```
-io.github.vladimirizdinsky.heatercontrol
-  HeaterControlApp.kt              @HiltAndroidApp
-  MainActivity.kt
-  data/
-    api/        HeaterHubApi, dto/, ApiException (error code + HTTP status), HttpClientFactory
-    auth/       CredentialsStore (DataStore + Keystore), SessionRepository (logged in? logout, 401)
-    device/     DeviceRepository (polling, commands, rename), DeviceMapper (DTO → domain)
-  domain/
-    model/      Device, Attribute, DeviceFunction, Input, Fault, Command, vocabulary enums
-    QuickControls.kt               rules from 5.1 (pure functions, unit-tested)
-  ui/
-    navigation/ routes, AppNavigation
-    connect/    ConnectScreen, ConnectViewModel
-    main/       MainScaffold (bottom bar)
-    devices/    DeviceListScreen, DeviceListViewModel, DeviceCard, QuickControlChip
-    detail/     DeviceDetailScreen, DeviceDetailViewModel, RenameDialog, controls/
-    floorplan/  FloorPlanScreen
-    settings/   SettingsScreen, SettingsViewModel
-    common/     VocabularyText, DeviceImage, error/snackbar helpers
-    theme/
+:app                 MainActivity, HeaterControlApp (@HiltAndroidApp), AppNavigation (routes,
+                     back stack), MainScaffold (bottom bar), FloorPlanScreen (placeholder)
+:core:network        HttpClientFactory, ApiException (HTTP status + error code), ErrorDto,
+                     ApiEnum / apiEnumOf
+:core:session        CredentialsStore (DataStore + Keystore), SessionRepository (server URL,
+                     token, client with the token, logout, 401 → Connect)          (milestone 2)
+:core:ui             theme, shared composables                                    (when needed)
+:feature:users       Connect (pair), More (/me, logout), Pair a device (users, pairings)
+:feature:devices     device list, device detail, commands, QuickControls (5.1)
+later:
+:feature:groups      depends on :feature:devices (a group command controls devices)
+:feature:history
 ```
 
-### 7.2 Domain model (sketch)
+Dependencies point one way: `:app` → `:feature:*` → `:core:*`; a feature never depends on
+`:app`. `:core:session` sits outside `:feature:users`, because devices need the client with the
+token too. Navigation lives in `:app`: a feature exposes its screens as composables with
+callbacks (`onDeviceClick(id)`, `onLoggedOut()`), `:app` wires them to routes.
+
+Inside a feature module (`io.github.vladimirizdinsky.heatercontrol.feature.<area>`):
+
+```
+data/            <Area>Api (Ktor calls), <Area>Mapper (DTO → domain), repositories
+data/dto/        @Serializable DTOs written from docs/api.md
+domain/          model/ and pure rules (QuickControls), unit-tested on the JVM
+ui/              screens, ViewModels, components
+```
+
+Layers inside a feature are kept apart by packages only (features are Android libraries because
+of Compose). If that stops being enough, a feature splits into `:feature:<area>:domain` and
+`:feature:<area>:ui`.
+
+Build setup: `build-logic/` (included build) with two convention plugins,
+`heatercontrol.android.library` (`:core:*`: SDK levels, Java 11, JUnit) and
+`heatercontrol.android.feature` (library + Compose + Material 3). Modules reference each other
+with type-safe accessors (`implementation(projects.core.network)`).
+
+### 7.2 Domain model
+
+Code: `:feature:devices` `domain/model/` (`Device.kt`, `Command.kt`, `DeviceVocabulary.kt`) and
+`:feature:users` `domain/model/User.kt`. The core:
 
 ```kotlin
 data class Device(
     val id: String,
-    val displayName: String,          // friendlyName ?: model
+    val model: String,                // also shown under the image in the detail
     val friendlyName: String?,
     val imageUrl: String?,            // already absolute
     val online: Boolean,
+    val updatedAt: Instant?,
     val attributes: Map<AttributeId, AttributeValue>,
     val functions: Map<FunctionId, DeviceFunction>,  // keeps server order (LinkedHashMap)
     val faults: List<Fault>?,
     val pendingCommandId: String?,
-)
+) {
+    val displayName: String get() = friendlyName ?: model
+}
 
 sealed interface AttributeValue {
     data class Bool(val value: Boolean?) : AttributeValue
-    data class Number(val value: Double?, val unit: Unit?) : AttributeValue
-    data class Enum(val value: ModeValue?, val raw: String?, val options: List<ModeValue>) : AttributeValue
+    data class Number(val value: Double?, val unit: MeasureUnit?) : AttributeValue
+    data class Enum(val value: ModeValue?, val options: List<ModeValue>) : AttributeValue
 }
 ```
 
+- Vocabulary enums carry their `apiId`; `apiEnumOf<T>(id)` returns `null` for unknown values.
+- `Fault` keeps the raw code, so an unknown fault is still shown (API section 8).
+- `Input` is sealed (`Bool`, `Number`, `Enum`); a function with an unknown input type is dropped.
+- An unknown user role maps to `user`.
+
 ## 8. Milestones
 
-1. Dependencies, DTOs, `HeaterHubApi`, mapper + tests (against fake server JSON).
-2. Credentials store, session, Connect screen (manual code first, then QR scan + deep link), `GET /me`.
-3. Main scaffold with bottom bar, Floor plan + Settings placeholders, logout.
+1. Modules and build-logic; DTOs, `DevicesApi` / `UsersApi`, mappers + tests (against JSON
+   from `docs/api.md`, Ktor `MockEngine`).
+2. `:core:session` (credentials store, session), Connect screen (manual code first, then QR scan + deep link), `GET /me`.
+3. Main scaffold with bottom bar, Floor plan + More placeholders, logout.
 4. Device repository with polling, device list (read-only).
 5. Commands + quick controls on the list, snackbar outcomes.
 6. Device detail: generated controls, rename.
@@ -268,7 +300,9 @@ sealed interface AttributeValue {
 
 ## 9. Decisions
 
-- Third tab: Settings. (2026-10-28)
+- Third tab: "More" (Možnosti), icon with three horizontal lines. (2026-10-28)
 - Fan chip shows fan speed. (2026-10-28)
 - Heating chip on a device without fan toggles power, also on Bornholm with `noHeat`. (2026-10-28)
 - Login by QR pairing code (implemented on the server); any user can pair from the app, admins can also create users. (2026-10-28)
+- Modules by area (`:feature:users`, `:feature:devices`, later groups and history) on top of
+  `:core:network` / `:core:session` / `:core:ui`, with convention plugins in `build-logic/`. (2026-10-31)

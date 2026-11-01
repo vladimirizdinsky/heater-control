@@ -1,4 +1,5 @@
 pluginManagement {
+    includeBuild("build-logic")
     repositories {
         google {
             content {
@@ -22,6 +23,11 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Heater Control"
+enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
+
+rootProject.name = "HeaterControl"
 include(":app")
+include(":core:network")
+include(":feature:devices")
+include(":feature:users")
  
